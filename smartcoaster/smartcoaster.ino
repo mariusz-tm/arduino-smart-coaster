@@ -18,15 +18,15 @@ rgb_lcd lcd;
 const int potentiometerPin = A0;
 int potentiometerValue = 0;
 
-// Set variable for reset button
-const int buttonPin = 2; 
+// Set variable for reset pad (touch sensor)
+const int touchPin = 2;
 
 // Set variables for temperature
 int temperatureValue = 0;
 int lastTemperatureValue = -999;
 
 // Set variables for time required to lock, time check and lock state
-const int lockDelay = 5000;
+const int lockDelay = 3000;
 unsigned long lastChangeTime = 0;
 bool locked = false;
 
@@ -45,18 +45,18 @@ void resetState() {
   lcd.setCursor(2, 1); 
   lcd.print("Press to start"); // ##Push#to#start##
  
-  // Waits until user presses reset button before moving onto main loop
-  int buttonState = digitalRead(buttonPin);
-  while (buttonState != 1)
+  // Waits until user presses reset pad (touch sensor) before moving onto main loop
+  int touchState = digitalRead(touchPin);
+  while (touchState != 1)
   {
-    buttonState = digialRead(buttonPin);
+    touchState = digitalRead(touchPin);
   }
   lcd.clear();
 }
 
 void setup() {
-  // Initializing button as input for the resetState
-  pinMode(buttonPin, INPUT); 
+  // Initializing touch sensor as input for the resetState
+  pinMode(touchPin, INPUT); 
 
   // Initializing lcd screen
   lcd.begin(16, 2);
@@ -66,13 +66,13 @@ void setup() {
   lcd.setCursor(6, 0); 
   lcd.print("Welcome"); // #####Welcome#####
   lcd.setCursor(2, 1); 
-  lcd.print("Press to start"); // ##Push#to#start##
+  lcd.print("Push to start"); // ##Push#to#start##
  
-  // Waits until user presses reset button before moving onto main loop
-  int buttonState = digitalRead(buttonPin);
-  while (buttonState != 1)
+  // Waits until user presses reset pad (touch sensor) before moving onto main loop
+  int touchState = digitalRead(touchPin);
+  while (touchState != 1)
   {
-    buttonState = digialRead(buttonPin);
+    touchState = digitalRead(touchPin);
   }
   lcd.clear();
 
@@ -81,9 +81,9 @@ void setup() {
 }
 
 void loop() {
-  // Activating resetState if button value is 1 (is being pressed)
-  int buttonState = digitalRead(buttonPin);
-  if (buttonState == 1)
+  // Activating resetState if touch value is 1 (is being pressed)
+  int touchState = digitalRead(touchPin);
+  if (touchState == 1)
   {
     delay(20);
     resetState();
@@ -106,7 +106,6 @@ void loop() {
     else if (millis() - lastChangeTime >= lockDelay) 
     {
       locked = true;
-      finalValue = temperatureValue;
     }
 
     // Printing display to show temperature set by user
@@ -115,7 +114,7 @@ void loop() {
     lcd.setCursor(10, 0);
     lcd.print(temperatureValue);
     lcd.setCursor(14, 0);
-    lcd.print("°C") 
+    lcd.print("°C");
   } 
   else 
   {
@@ -124,6 +123,6 @@ void loop() {
     lcd.setCursor(10, 0);
     lcd.print(temperatureValue);
     lcd.setCursor(14, 0);
-    lcd.print("°C") 
+    lcd.print("°C"); // Temp#Goal:000°C#
   }
 }
