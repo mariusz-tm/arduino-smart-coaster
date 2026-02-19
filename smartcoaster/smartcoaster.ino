@@ -4,6 +4,8 @@
 
   created 17 February 2026
   by Mariusz Matczak
+  modified 19 February 2026
+  by Kritika Saini
 
   Find the full Smart Coaster documentation here:
   https://github.com/mariusz-tm/arduino-smart-coaster
@@ -29,6 +31,10 @@ int lastTemperatureValue = -999;
 const int lockDelay = 3000;
 unsigned long lastChangeTime = 0;
 bool locked = false;
+
+// Set variables for buzzer
+bool hasBuzzed = false;
+const int buzzerPin = 5;
 
 void resetState() {
   // Resets all variables to default states
@@ -57,6 +63,9 @@ void resetState() {
 void setup() {
   // Initializing touch sensor as input for the resetState
   pinMode(touchPin, INPUT); 
+
+  // Initializing buzzer as output
+  pinMode(bunnerPin, OUTPUT);
 
   // Initializing lcd screen
   lcd.begin(16, 2);
@@ -121,8 +130,17 @@ void loop() {
     lcd.setCursor(0, 0);
     lcd.print("Temp Goal: ");
     lcd.setCursor(10, 0);
-    lcd.print(temperatureValue);
+    lcd.print(temperatureValue); // REQUIRES CHANGE TO TEMPERATURE SENSOR VALUE
     lcd.setCursor(14, 0);
     lcd.print("°C"); // Temp#Goal:000°C#
+
+    // Sounds the buzzer when the temperature of the cup is the same as the desired temperature
+    if (hasBuzzed = false && temperatureValue = temperatureValue) // REQUIRES CHANGE TO TEMPERATURE SENSOR VALUE
+    {
+      digitalWrite(buzzerPin, HIGH);
+      delay(3000);
+      digitalWrite(buzzerPin, LOW);
+      hasBuzzer = true;
+    }
   }
 }
