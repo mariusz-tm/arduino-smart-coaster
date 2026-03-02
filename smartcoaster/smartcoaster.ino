@@ -8,6 +8,8 @@
   by Kritika Saini
   modified 25 February 2026
   by Salsabil Amer
+  modified 2 March 2026
+  by Eleonora Salaka
 
   Find the full Smart Coaster documentation here:
   https://github.com/mariusz-tm/arduino-smart-coaster
