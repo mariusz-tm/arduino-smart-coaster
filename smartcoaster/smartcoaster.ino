@@ -1,5 +1,5 @@
 /*
-  This is code for an Arduino UNO R4 WiFi using a Grove Kit V3.
+  This is code for an Arduino UNO R4 using a Grove Kit V3.
   Allows user to set desired temperature of drink in a range of 0-100 and displays it on a 16x2 LCD screen.
 
   created 17 February 2026
@@ -8,26 +8,40 @@
   by Kritika Saini
   modified 25 February 2026
   by Salsabil Amer
+  modified 21 April 2026
+  by Mariusz Matczak
 
   Find the full Smart Coaster documentation here:
   https://github.com/mariusz-tm/arduino-smart-coaster
 */
 
-#include <WiFiS3.h>           
-#include "arduino_secrets.h"  // WiFi credentials
-#include "webpage.h"
+#include "arduino_secrets.h"
+
+#include <WiFiS3.h>
 #include <Wire.h>
 #include "rgb_lcd.h"
+#include "wifi-form.h"
+
+#include <BlynkSimpleWifi.h>
+#include <math.h>
 
 rgb_lcd lcd;
 
-//  Set WiFi credientals loaded from arduino-secrets.h
-char ssid[] = SECRET_SSID;    
-char pass[] = SECRET_PASS;    
+// WiFi credentials of coaster's hotspot
+char hotspotSSID[] = "Coaster-Setup";
+char hotspotPASS[] = "";
 
-//
 WiFiServer server(80);
-bool isTurnedOff = false;
+
+String newSSID = "";
+String newPASS = "";
+
+bool wifiReady = false;
+bool blynkReady = false;
+
+// Google Sheets
+WiFiSSLClient sheetClient;
+bool sheetSent = false;
 
 // Set variables for temperature dial (potentiometer)
 const int potentiometerPin = A0;
@@ -56,93 +70,205 @@ const int buzzerPin = A3;
 bool waitingForStart = true;
 bool lastTouch = false;
 
-void resetState() {
-  // Resets all variables to default states
-  potentiometerValue = 0;
-  temperatureValue = 0;
-  lastTemperatureValue = -999;
-  lastChangeTime = millis();
-  locked = false;
-  hasBuzzed = false;
+// Buzzer disable via Blynk
+bool buzzerDisabled = false;
 
-  waitingForStart = true;
+// ================= FUNCTION DECLARATIONS (FIX COMPILER ERROR) =================
+void parseCredentials(String req);
+void sendFormPage(WiFiClient client);
 
-  // Resets lcd screen to initial display
-  lcd.clear();
-  lcd.setCursor(6, 0); 
-  lcd.print("Welcome"); // #####Welcome#####
-  lcd.setCursor(2, 1); 
-  lcd.print("Press to start"); // ##Push#to#start##
+// ================= BLYNK CONTROL =================
+BLYNK_WRITE(V6)
+{
+  buzzerDisabled = param.asInt();
 }
 
-void setup() {
-  Serial.begin(9600);
+// ================= WIFI PARSE =================
+void parseCredentials(String req)
+{
+  int ssidIndex = req.indexOf("ssid=");
+  int passIndex = req.indexOf("pass=");
 
+  if (ssidIndex > 0 && passIndex > 0) {
+    newSSID = req.substring(ssidIndex + 5, req.indexOf('&', ssidIndex));
+    newPASS = req.substring(passIndex + 5, req.indexOf(' ', passIndex));
 
-  if (WiFi.status() == WL_NO_MODULE) {
-    Serial.println("ERROR: WiFi module communication failed!");
-    Serial.println("Check hardware connections.");
-    while (true) {
-      delay(1000);
+    newSSID.replace("%20", " ");
+    newPASS.replace("%20", " ");
+  }
+}
+
+// ================= HOTSPOT =================
+void startHotspot()
+{
+  WiFi.beginAP(hotspotSSID, hotspotPASS);
+
+  server.begin();
+
+  lcd.clear();
+  lcd.setCursor(2, 0);
+  lcd.print("Connect to");
+  lcd.setCursor(1, 1);
+  lcd.print("Coaster-Setup");
+
+  delay(10000); // short pause before showing IP
+
+  // New screen with IP
+  lcd.clear();
+  lcd.setCursor(2, 0);
+  lcd.print("Connect to");
+  lcd.setCursor(2, 1);
+  lcd.print(WiFi.localIP());
+}
+
+// ================= WIFI TEST =================
+bool testConnection()
+{
+  lcd.clear();
+  lcd.setCursor(1, 0);
+  lcd.print("Connecting...");
+
+  WiFi.end();
+
+  int status = WiFi.begin(newSSID.c_str(), newPASS.c_str());
+
+  int retries = 0;
+  while (status != WL_CONNECTED && retries < 10) {
+    delay(1000);
+    status = WiFi.status();
+    retries++;
+  }
+
+  if (status == WL_CONNECTED) {
+    lcd.clear();
+    lcd.setCursor(2, 0);
+    lcd.print("Connected!");
+    delay(1000);
+    return true;
+  } else {
+    lcd.clear();
+    lcd.setCursor(1, 0);
+    lcd.print("No Connection");
+
+    delay(3000);
+
+    WiFi.disconnect();
+    startHotspot();
+    return false;
+  }
+}
+
+// ================= GOOGLE SHEETS =================
+void sendToSheet(float startTemp)
+{
+  if (sheetClient.connect("script.google.com", 443)) {
+
+    String url = String(GOOGLE_SCRIPT_URL) +
+                 "?IDtag=" + String(temperatureValue) +
+                 "&TimeStamp=" + String(millis()) +
+                 "&TempC=" + String(startTemp);
+
+    sheetClient.println("GET " + url + " HTTP/1.1");
+    sheetClient.println("Host: script.google.com");
+    sheetClient.println("Connection: close");
+    sheetClient.println();
+
+    sheetClient.stop();
+  }
+}
+
+// ================= BLYNK DATA =================
+void sendBlynkData()
+{
+  int tempSensorValue = analogRead(tempSensorPin);
+
+  float thermistorResistance =
+    (float)(1023 - tempSensorValue) * 10000 / tempSensorValue;
+
+  float sensorTemperature =
+    1 / (log(thermistorResistance / 10000) / B + 1 / 298.15) - 273.15;
+
+  Blynk.virtualWrite(V4, sensorTemperature);
+  Blynk.virtualWrite(V5, temperatureValue);
+}
+
+// ================= CLIENT HANDLER =================
+void handleClient()
+{
+  WiFiClient client = server.available();
+  if (!client) return;
+
+  String request = "";
+
+  while (client.connected()) {
+    if (client.available()) {
+      char c = client.read();
+      request += c;
+
+      if (c == '\n') {
+
+        if (request.indexOf("GET /save?") >= 0) {
+
+          parseCredentials(request);
+
+          if (testConnection()) {
+
+            WiFi.end();
+
+            wifiReady = true;
+          }
+        } else {
+          sendFormPage(client);
+        }
+
+        break;
+      }
     }
   }
 
-  String fv = WiFi.firmwareVersion();
-  Serial.print("WiFi firmware version: ");
-  Serial.println(fv);
+  client.stop();
+}
 
-  int status = WL_IDLE_STATUS;  
-  Serial.println("Connecting to WiFi...");
-  
-  while (status != WL_CONNECTED) {
-    Serial.print("Attempting connection to SSID: ");
-    Serial.println(ssid);
-    
-    status = WiFi.begin(ssid, pass);
-    
-    delay(5000);
-  }
+// ================= WEB PAGE =================
+void sendFormPage(WiFiClient client)
+{
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-type:text/html");
+  client.println("Connection: close");
+  client.println();
 
-  Serial.println("WiFi connected successfully!");
+  client.print(WIFI_FORM);
+}
 
-  server.begin();
-  Serial.println("Web server started");
+// ================= SETUP =================
+void setup()
+{
+  Serial.begin(9600);
 
-  IPAddress ip = WiFi.localIP();  
-  Serial.print("Server IP address: ");
-  Serial.println(ip);
-  Serial.print("Open browser: http://");
-  Serial.println(ip);
-  Serial.println("=====================================");
-
-  // Initializing touch sensor as input for the resetState
-  pinMode(touchPin, INPUT); 
-
-  // Initializing buzzer as output
+  pinMode(touchPin, INPUT);
   pinMode(buzzerPin, OUTPUT);
 
-  // Initializing lcd screen
   lcd.begin(16, 2);
   lcd.setRGB(255, 255, 255);
 
-  // Welcome interaction requiring user input
-  lcd.setCursor(6, 0); 
-  lcd.print("Welcome"); // #####Welcome#####
-  lcd.setCursor(2, 1); 
-  lcd.print("Push to start"); // ##Push#to#start##
-
-  potentiometerValue = 0;
-  temperatureValue = 0;
-  lastTemperatureValue = -999;
-  lastChangeTime = millis();
-  locked = false;
-  hasBuzzed = false;
-  waitingForStart = true;
-  lastTouch = false;
-  isTurnedOff = false;
+  startHotspot();
 }
 
-void loop() {
+// ================= LOOP =================
+void loop()
+{
+  if (!wifiReady) {
+    handleClient();
+    return;
+  }
+
+  if (!blynkReady) {
+    Blynk.begin(BLYNK_AUTH_TOKEN, newSSID.c_str(), newPASS.c_str());
+    blynkReady = true;
+  }
+
+  Blynk.run();
+
   bool currentTouch = (digitalRead(touchPin) == HIGH);
   bool touchPressedNow = currentTouch && !lastTouch;
   lastTouch = currentTouch;
@@ -156,138 +282,57 @@ void loop() {
   }
 
   if (touchPressedNow) {
-    resetState();
+    waitingForStart = true;
+    lcd.clear();
     return;
   }
 
-  if (!locked) 
-  {
-    // Takes the reading from potentiometer and maps it onto a 0-99 range for temperature
+  if (!locked) {
     potentiometerValue = analogRead(potentiometerPin);
     potentiometerValue = constrain(potentiometerValue, 0, 1023);
-    temperatureValue = map(potentiometerValue, 0, 1013, 0, 99);
+    temperatureValue = map(potentiometerValue, 0, 1023, 0, 99);
 
-    // If-statement to check if dial is being turned
-    if (temperatureValue != lastTemperatureValue) 
-    {
+    if (temperatureValue != lastTemperatureValue) {
       lastTemperatureValue = temperatureValue;
       lastChangeTime = millis();
     }
-    // locks user input if dial has not been turned for lockDelay milliseconds
-    else if (millis() - lastChangeTime >= lockDelay) 
-    {
+    else if (millis() - lastChangeTime >= lockDelay) {
       locked = true;
     }
 
-    // Printing display to show temperature set by user
     lcd.setCursor(0, 0);
     lcd.print("Temp Goal:");
     lcd.setCursor(10, 0);
     lcd.print(temperatureValue);
     lcd.setCursor(12, 0);
-    lcd.print("C"); // Temp#Goal:00C###
-  } 
-  else 
-  {
-    // Takes value of temperature sensor and converts it to Celsius value (SEE README.md)
+    lcd.print("C");
+  }
+  else {
     int tempSensorValue = analogRead(tempSensorPin);
-    float thermistorResistance = (float)(1023-tempSensorValue)*10000/tempSensorValue;
-    float sensorTemperature = 1/(log(thermistorResistance/10000)/B+1/298.15)-273.15;
 
-    WiFiClient client = server.available();
+    float thermistorResistance =
+      (float)(1023 - tempSensorValue) * 10000 / tempSensorValue;
 
-    String currentLine = "";      
-    String firstLine = "";        
-    bool isPostFlag = false;      
+    float sensorTemperature =
+      1 / (log(thermistorResistance / 10000) / B + 1 / 298.15) - 273.15;
 
-    while (client.connected()) {
-    if (client.available()) {
-      char c = client.read();   
+    lcd.setCursor(0, 1);
+    lcd.print("Temp Now :");
+    lcd.setCursor(10, 1);
+    lcd.print(sensorTemperature);
+    lcd.setCursor(14, 1);
+    lcd.print("C");
 
-      if (c == '\n') {          
-        if (firstLine.length() == 0 && currentLine.length() > 0) {
-          firstLine = currentLine;  
+    if (!sheetSent) {
+      sendToSheet(sensorTemperature);
+      sheetSent = true;
+    }
 
-          if (firstLine.startsWith("POST /flag")) {
-            isPostFlag = true;
-            Serial.println("Detected POST /flag request (button pressed)");
-          }
-        }
-
-        if (currentLine.length() == 0) {
-          if (isPostFlag) {
-            isTurnedOff = true;
-            Serial.print("isTurnedOff changed to: ");
-            Serial.println(isTurnedOff ? "true" : "false");
-            sendFlagResponse(client);
-            
-          } else if (firstLine.startsWith("GET /data")) {
-            sendJsonData(client);
-            
-          } else {
-            sendHtmlPage(client);
-          }
-          break;
-        } 
-        else {
-          currentLine = "";
-        }
-      } 
-      else if (c != '\r') {   
-        currentLine += c;
-      }
+    if (!buzzerDisabled && hasBuzzed == false && temperatureValue >= sensorTemperature) {
+      digitalWrite(buzzerPin, HIGH);
+      delay(3000);
+      digitalWrite(buzzerPin, LOW);
+      hasBuzzed = true;
     }
   }
-  client.stop();
-
-  lcd.setCursor(0, 1);
-  lcd.print("Temp Now :");
-  lcd.setCursor(10, 1);
-  lcd.print(sensorTemperature);
-  lcd.setCursor(14, 1);
-  lcd.print("C"); // Temp#Now#:000#C#
-
-  // Sounds the buzzer when the temperature of the cup is the same as the desired temperature
-  if (hasBuzzed == false && temperatureValue >= sensorTemperature && isTurnedOff == false)
-  {
-    digitalWrite(buzzerPin, HIGH);
-    delay(3000);
-    digitalWrite(buzzerPin, LOW);
-    hasBuzzed = true;
-  }
-}
-}
-
-void sendHtmlPage(WiFiClient &client) {
-  Serial.println("sendHtmlPage called");
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: text/html");
-  client.println("Connection: close");  
-  client.println();                     
-  
-  client.print(MAIN_page);
-}
-
-// Sends data from dial, temperature sensor and is(Buzzer)TurnedOff to webpage
-void sendJsonData(WiFiClient &client) {
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: application/json");
-  client.println("Connection: close");
-  client.println();
-
-  client.print("{\"temperatureValue\":");
-  client.print(temperatureValue);
-  client.print(",\"sensorTemperature\":");
-  client.print(sensorTemperature);
-  client.print(",\"isTurnedOff\":");
-  client.print(isTurnedOff ? "true" : "false");  
-  client.println("}");
-}
-
-void sendFlagResponse(WiFiClient &client) {
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: text/plain");
-  client.println("Connection: close");
-  client.println();
-  client.println("OK");  
 }
